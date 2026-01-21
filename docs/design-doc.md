@@ -1889,21 +1889,57 @@ class AlertManager:
 
 ### 11.1 Core Technologies
 
+**Implementation Architecture: Python + C++ Extensions**
+
+The system uses a hybrid architecture:
+- **Python**: High-level logic, API, data pipeline, orchestration
+- **C++**: Performance-critical numerical computations (PDE solvers, Monte Carlo, calibration inner loops)
+- **Integration**: pybind11 for seamless Python/C++ interoperability
+
 | Component | Technology | Justification |
 |-----------|------------|---------------|
-| Application Language | Python 3.11+ | NumPy/SciPy for numerical computing, extensive quant libraries |
-| Numerical Computing | NumPy, SciPy, numba | Fast vectorized operations, JIT compilation |
-| Optimization | scipy.optimize, cvxpy | Global and local optimization, convex programming |
-| PDE Solvers | FiPy, custom finite difference | Solve Heston/SABR PDEs numerically |
+| Application Language | Python 3.11+ | Rapid development, extensive quant libraries, clean API design |
+| Performance Extensions | C++17/20 | 10-100x speedup for numerical kernels, low-level optimization |
+| Python/C++ Binding | pybind11 | Zero-overhead bindings, automatic type conversion, STL support |
+| Build System | CMake + setuptools | Cross-platform builds, dependency management |
+| Numerical Computing (Python) | NumPy, SciPy, numba | Fast vectorized operations, JIT compilation |
+| Numerical Computing (C++) | Eigen, Boost, Intel MKL | Linear algebra, special functions, optimized BLAS/LAPACK |
+| Optimization (Python) | scipy.optimize, cvxpy | Global and local optimization, convex programming |
+| Optimization (C++) | NLopt, Ceres Solver | Production-grade nonlinear optimization |
+| PDE Solvers (C++) | Custom finite difference | Hand-tuned solvers for Heston/SABR with vectorization |
 | Time Series DB | TimescaleDB (PostgreSQL extension) | Optimized for time-series queries, SQL compatibility |
 | Caching | Redis | Fast parameter caching, session management |
 | Message Queue | RabbitMQ | Asynchronous task processing (calibration jobs) |
-| Backtesting | Backtrader, custom framework | Vectorized backtesting, event-driven simulation |
+| Backtesting | Custom framework (Python) | Vectorized backtesting, event-driven simulation |
 | Monitoring | Grafana + Prometheus | Real-time dashboards, alerting |
 | Deployment | Docker + Kubernetes | Containerization, orchestration, scalability |
 | CI/CD | GitHub Actions | Automated testing, deployment |
 
-### 11.2 Python Libraries
+### 11.2 Python/C++ Integration Architecture
+
+**Design Principles:**
+1. **Python for orchestration**: API, data pipeline, strategy logic
+2. **C++ for compute**: Inner loops, PDE solvers, Monte Carlo simulation
+3. **Clean interface**: Python calls C++ through simple, well-documented API
+4. **Type safety**: pybind11 provides compile-time type checking
+5. **Memory efficiency**: Zero-copy NumPy array passing between Python/C++
+
+**Performance-Critical Components in C++:**
+- Heston characteristic function evaluation
+- PDE solvers (finite difference schemes)
+- Monte Carlo simulation engines
+- Fast Fourier Transform for option pricing
+- Matrix operations for calibration
+- Real-time Greeks calculations
+
+**Python Wrapper Responsibilities:**
+- Parameter validation and type checking
+- Logging and monitoring
+- Error handling and recovery
+- Caching and database interaction
+- Result aggregation and formatting
+
+### 11.3 Python Libraries
 
 **Quant-specific:**
 ```
@@ -1916,6 +1952,14 @@ statsmodels>=0.14   # Time series analysis (cointegration tests)
 arch>=5.3           # GARCH, volatility modeling
 pysabr>=0.4         # SABR model implementation
 QuantLib>=1.30      # Comprehensive derivatives pricing
+```
+
+**Python/C++ Integration:**
+```
+pybind11>=2.11      # C++ binding generation
+cmake>=3.18         # Build system
+ninja>=1.11         # Fast builds
+scikit-build>=0.17  # Python package builds with CMake
 ```
 
 **Data & Infrastructure:**
@@ -1934,7 +1978,232 @@ structlog>=23.1
 sentry-sdk>=1.20
 ```
 
-### 11.3 Hardware Requirements
+### 11.4 C++ Libraries and Build Tools
+
+**Core Libraries:**
+```
+Eigen 3.4+              # Linear algebra, matrix operations
+Boost 1.80+             # Math special functions, multiprecision
+Intel MKL (optional)    # Optimized BLAS/LAPACK
+NLopt 2.7+              # Nonlinear optimization
+Ceres Solver 2.1+       # Nonlinear least squares
+```
+
+**Build System:**
+```
+CMake 3.18+             # Cross-platform build system
+GCC 11+ or Clang 14+    # C++17/20 support
+Ninja                   # Fast incremental builds
+ccache                  # Compiler cache for faster rebuilds
+```
+
+**Testing:**
+```
+Google Test (gtest)     # C++ unit testing framework
+Google Benchmark        # Performance benchmarking
+```
+
+**Development Tools:**
+```
+clang-format            # Code formatting
+clang-tidy              # Static analysis
+valgrind                # Memory leak detection
+perf/vtune              # Performance profiling
+```
+
+### 11.5 Python/C++ Integration Example
+
+**Example: Heston Option Pricing**
+
+**C++ Implementation (src/cpp/heston_pricer.cpp):**
+```cpp
+#include <pybind11/pybind11.h>
+#include <pybind11/numpy.h>
+#include <pybind11/stl.h>
+#include <Eigen/Dense>
+#include <complex>
+
+namespace py = pybind11;
+
+class HestonPricer {
+private:
+    // Heston parameters
+    double kappa, theta, sigma, rho, v0;
+
+    std::complex<double> characteristic_function(
+        std::complex<double> u, double T, double S0, double r, double q
+    ) {
+        // Implementation of Heston CF (Equation 17)
+        // ... optimized C++ code ...
+    }
+
+public:
+    HestonPricer(double k, double t, double s, double r, double v)
+        : kappa(k), theta(t), sigma(s), rho(r), v0(v) {}
+
+    py::array_t<double> price_options(
+        py::array_t<double> strikes,
+        py::array_t<double> maturities,
+        double S0, double r, double q
+    ) {
+        // Zero-copy access to NumPy arrays
+        auto strikes_buf = strikes.unchecked<1>();
+        auto mat_buf = maturities.unchecked<1>();
+
+        size_t n_options = strikes.size();
+        auto result = py::array_t<double>(n_options);
+        auto result_buf = result.mutable_unchecked<1>();
+
+        // Vectorized pricing loop (OpenMP parallel)
+        #pragma omp parallel for
+        for(size_t i = 0; i < n_options; ++i) {
+            result_buf(i) = price_single_option(
+                strikes_buf(i), mat_buf(i), S0, r, q
+            );
+        }
+
+        return result;
+    }
+};
+
+PYBIND11_MODULE(heston_cpp, m) {
+    py::class_<HestonPricer>(m, "HestonPricer")
+        .def(py::init<double, double, double, double, double>(),
+             py::arg("kappa"), py::arg("theta"), py::arg("sigma"),
+             py::arg("rho"), py::arg("v0"))
+        .def("price_options", &HestonPricer::price_options,
+             py::arg("strikes"), py::arg("maturities"),
+             py::arg("S0"), py::arg("r"), py::arg("q"),
+             "Price multiple options using Heston model");
+}
+```
+
+**Python Wrapper (src/python/models/heston.py):**
+```python
+import numpy as np
+from typing import Dict, List
+from ..cpp import heston_cpp  # C++ extension module
+
+class HestonCalibrator:
+    """
+    Heston model calibrator with C++ acceleration.
+
+    Uses C++ for characteristic function evaluation and option pricing,
+    Python for optimization and data handling.
+    """
+
+    def __init__(self):
+        self._cpp_pricer = None
+
+    def _price_options_fast(
+        self,
+        params: Dict[str, float],
+        market_options: np.ndarray,
+        S0: float, r: float, q: float
+    ) -> np.ndarray:
+        """Price options using C++ backend."""
+
+        # Create C++ pricer instance
+        pricer = heston_cpp.HestonPricer(
+            kappa=params['kappa'],
+            theta=params['theta'],
+            sigma=params['sigma'],
+            rho=params['rho'],
+            v0=params['v0']
+        )
+
+        # Call C++ (zero-copy NumPy array passing)
+        strikes = market_options['strike'].values
+        maturities = market_options['maturity'].values
+
+        prices = pricer.price_options(strikes, maturities, S0, r, q)
+
+        return prices
+
+    def calibrate(self, market_options, S0, r, q):
+        """Calibrate using scipy optimization + C++ pricing."""
+
+        def objective(params_array):
+            params = self._array_to_params(params_array)
+            model_prices = self._price_options_fast(
+                params, market_options, S0, r, q
+            )
+            market_prices = market_options['mid_price'].values
+            errors = (model_prices - market_prices) / market_prices
+            return np.sum(errors**2)
+
+        # Use scipy for optimization, C++ for evaluation
+        from scipy.optimize import differential_evolution
+        result = differential_evolution(objective, bounds=self._get_bounds())
+
+        return self._array_to_params(result.x)
+```
+
+**Build Configuration (CMakeLists.txt):**
+```cmake
+cmake_minimum_required(VERSION 3.18)
+project(quant_trading_cpp)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Find dependencies
+find_package(pybind11 REQUIRED)
+find_package(Eigen3 REQUIRED)
+find_package(OpenMP)
+
+# Heston pricer module
+pybind11_add_module(heston_cpp
+    src/cpp/heston_pricer.cpp
+)
+target_link_libraries(heston_cpp PRIVATE Eigen3::Eigen)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(heston_cpp PRIVATE OpenMP::OpenMP_CXX)
+endif()
+
+# Optimization flags
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(heston_cpp PRIVATE
+        -O3 -march=native -ffast-math
+    )
+endif()
+```
+
+**Setup.py:**
+```python
+from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext
+import sys
+import setuptools
+
+class CMakeExtension(Extension):
+    def __init__(self, name, sourcedir=''):
+        Extension.__init__(self, name, sources=[])
+        self.sourcedir = os.path.abspath(sourcedir)
+
+class CMakeBuild(build_ext):
+    def run(self):
+        for ext in self.extensions:
+            self.build_extension(ext)
+
+    def build_extension(self, ext):
+        # Configure CMake and build
+        # ... implementation ...
+
+setup(
+    name='quant_trading',
+    version='1.0.0',
+    ext_modules=[CMakeExtension('heston_cpp')],
+    cmdclass=dict(build_ext=CMakeBuild),
+    install_requires=[
+        'numpy>=1.24',
+        'scipy>=1.10',
+        'pybind11>=2.11',
+    ],
+)
+```
+
+### 11.6 Hardware Requirements
 
 **Production Environment:**
 
