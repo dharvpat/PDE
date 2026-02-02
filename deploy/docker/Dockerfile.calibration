@@ -1,0 +1,41 @@
+# Calibration Service Dockerfile
+# High-performance model calibration service
+# Requires significant CPU/memory resources
+#
+# Reference: Heston (1993), SABR (Hagan 2002)
+#
+# Usage:
+#   docker build -f deploy/docker/Dockerfile.calibration -t quant-trading/calibration:latest .
+
+ARG BASE_IMAGE=quant-trading/base:latest
+FROM ${BASE_IMAGE}
+
+# Calibration-specific environment variables
+ENV SERVICE_NAME=calibration-service
+ENV LOG_LEVEL=INFO
+ENV OMP_NUM_THREADS=8
+ENV MKL_NUM_THREADS=8
+ENV NUMEXPR_NUM_THREADS=8
+
+# Install calibration-specific dependencies
+RUN pip install --no-cache-dir \
+    scipy \
+    numba \
+    quantlib-python \
+    cvxpy
+
+# Copy calibration code
+COPY src/python/quant_trading/calibration/ /app/src/python/quant_trading/calibration/
+COPY src/python/quant_trading/models/ /app/src/python/quant_trading/models/
+
+# Expose gRPC/REST port
+EXPOSE 8081
+
+# Calibration health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8081/health || exit 1
+
+# Run calibration service
+CMD ["python", "-m", "quant_trading.calibration.service", \
+     "--host", "0.0.0.0", \
+     "--port", "8081"]

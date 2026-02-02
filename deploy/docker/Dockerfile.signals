@@ -1,0 +1,44 @@
+# Signal Generation Service Dockerfile
+# Trading signal generation and aggregation
+#
+# Handles:
+# - Volatility arbitrage signals
+# - Mean-reversion signals
+# - Signal aggregation and weighting
+#
+# Usage:
+#   docker build -f deploy/docker/Dockerfile.signals -t quant-trading/signals:latest .
+
+ARG BASE_IMAGE=quant-trading/base:latest
+FROM ${BASE_IMAGE}
+
+# Signal service environment variables
+ENV SERVICE_NAME=signal-service
+ENV LOG_LEVEL=INFO
+ENV SIGNAL_REFRESH_SECONDS=60
+ENV MIN_CONFIDENCE=0.6
+
+# Install signal generation dependencies
+RUN pip install --no-cache-dir \
+    scipy \
+    statsmodels \
+    scikit-learn \
+    asyncpg \
+    redis
+
+# Copy signal generation code
+COPY src/python/quant_trading/signals/ /app/src/python/quant_trading/signals/
+COPY src/python/quant_trading/models/ /app/src/python/quant_trading/models/
+COPY src/python/quant_trading/calibration/ /app/src/python/quant_trading/calibration/
+
+# Expose signal service port
+EXPOSE 8084
+
+# Signal service health check
+HEALTHCHECK --interval=20s --timeout=10s --start-period=45s --retries=3 \
+    CMD curl -f http://localhost:8084/health || exit 1
+
+# Run signal service
+CMD ["python", "-m", "quant_trading.signals.service", \
+     "--host", "0.0.0.0", \
+     "--port", "8084"]

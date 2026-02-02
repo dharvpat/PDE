@@ -1,0 +1,273 @@
+# Continuous Deployment Workflow for Quantitative Trading System
+name: CD
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  HELM_RELEASE_NAME: quant-trading
+
+jobs:
+  # ==========================================================================
+  # Build and Push Images
+  # ==========================================================================
+  build:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-tag: ${{ steps.meta.outputs.version }}
+    strategy:
+      matrix:
+        service: [api, calibration, data-ingestion, execution, signals]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.service }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ steps.meta.outputs.version }}
+
+  # ==========================================================================
+  # Deploy to Staging
+  # ==========================================================================
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'staging'
+    environment:
+      name: staging
+      url: https://staging.quant-trading.example.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Kubernetes
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > ~/.kube/config
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install ${{ env.HELM_RELEASE_NAME }} \
+            deploy/helm/quant-trading \
+            --namespace quant-trading-staging \
+            --create-namespace \
+            --values deploy/helm/quant-trading/values.yaml \
+            --values deploy/helm/quant-trading/values-staging.yaml \
+            --set global.imageTag=${{ github.sha }} \
+            --set executionService.config.executionMode=paper \
+            --wait \
+            --timeout 10m
+
+      - name: Verify deployment
+        run: |
+          kubectl -n quant-trading-staging rollout status deployment/quant-trading-api --timeout=5m
+          kubectl -n quant-trading-staging rollout status deployment/quant-trading-calibration --timeout=5m
+
+      - name: Run smoke tests
+        run: |
+          API_URL="https://staging.quant-trading.example.com"
+          curl -f "${API_URL}/health/live" || exit 1
+          curl -f "${API_URL}/health/ready" || exit 1
+
+  # ==========================================================================
+  # Deploy to Production
+  # ==========================================================================
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build, deploy-staging]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.environment == 'production'
+    environment:
+      name: production
+      url: https://api.quant-trading.example.com
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Kubernetes
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > ~/.kube/config
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+
+      - name: Pre-deployment backup
+        run: |
+          kubectl -n quant-trading-prod exec deploy/timescaledb -- \
+            pg_dump -U quant quant_trading | gzip > backup_pre_deploy.sql.gz
+        continue-on-error: true
+
+      - name: Deploy with Helm
+        run: |
+          # Get the version tag
+          VERSION="${GITHUB_REF#refs/tags/}"
+
+          helm upgrade --install ${{ env.HELM_RELEASE_NAME }} \
+            deploy/helm/quant-trading \
+            --namespace quant-trading-prod \
+            --create-namespace \
+            --values deploy/helm/quant-trading/values.yaml \
+            --values deploy/helm/quant-trading/values-production.yaml \
+            --set global.imageTag=${VERSION} \
+            --set executionService.config.executionMode=paper \
+            --wait \
+            --timeout 15m \
+            --atomic
+
+      - name: Verify deployment
+        run: |
+          kubectl -n quant-trading-prod rollout status deployment/quant-trading-api --timeout=5m
+          kubectl -n quant-trading-prod rollout status deployment/quant-trading-calibration --timeout=5m
+          kubectl -n quant-trading-prod rollout status deployment/quant-trading-execution --timeout=5m
+
+      - name: Run production smoke tests
+        run: |
+          API_URL="https://api.quant-trading.example.com"
+
+          # Health checks
+          curl -f "${API_URL}/health/live" || exit 1
+          curl -f "${API_URL}/health/ready" || exit 1
+
+          # Verify critical services
+          for service in calibration data-ingestion execution signals; do
+            kubectl -n quant-trading-prod get pods -l app=${service} -o jsonpath='{.items[*].status.phase}' | grep -q Running || exit 1
+          done
+
+      - name: Notify deployment
+        if: success()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "Production deployment successful",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":white_check_mark: *Production Deployment Successful*\n*Version:* ${{ github.ref_name }}\n*Commit:* ${{ github.sha }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+  # ==========================================================================
+  # Rollback (Manual Trigger)
+  # ==========================================================================
+  rollback:
+    name: Rollback Deployment
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && failure()
+    environment:
+      name: ${{ github.event.inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Kubernetes
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubectl
+        run: |
+          if [ "${{ github.event.inputs.environment }}" == "production" ]; then
+            echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > ~/.kube/config
+            NAMESPACE="quant-trading-prod"
+          else
+            echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > ~/.kube/config
+            NAMESPACE="quant-trading-staging"
+          fi
+          echo "NAMESPACE=${NAMESPACE}" >> $GITHUB_ENV
+
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+
+      - name: Rollback Helm release
+        run: |
+          helm rollback ${{ env.HELM_RELEASE_NAME }} \
+            --namespace ${{ env.NAMESPACE }} \
+            --wait \
+            --timeout 10m
+
+      - name: Verify rollback
+        run: |
+          kubectl -n ${{ env.NAMESPACE }} rollout status deployment/quant-trading-api --timeout=5m
+
+      - name: Notify rollback
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "Rollback completed for ${{ github.event.inputs.environment }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":warning: *Rollback Completed*\n*Environment:* ${{ github.event.inputs.environment }}\n*Triggered by:* ${{ github.actor }}"
+                  }
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

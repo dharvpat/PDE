@@ -1,0 +1,137 @@
+# Kustomization for Production Environment
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: quant-trading-prod
+
+# Base resources
+resources:
+  - ../../base
+
+# Name suffix for all resources
+nameSuffix: -prod
+
+# Common labels
+commonLabels:
+  environment: production
+
+# Annotations
+commonAnnotations:
+  security.policy: restricted
+
+# Patches for production settings
+patches:
+  # Increase replicas for production
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+    target:
+      kind: Deployment
+      name: api-server
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 5
+    target:
+      kind: Deployment
+      name: calibration-service
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+    target:
+      kind: Deployment
+      name: data-ingestion
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+    target:
+      kind: Deployment
+      name: execution-service
+  - patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+    target:
+      kind: Deployment
+      name: signals-service
+
+  # Increase resource limits for production
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "1Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "1"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "4Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "4"
+    target:
+      kind: Deployment
+      name: api-server
+
+  # Increase calibration resources for production
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "32Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "16"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "64Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "32"
+    target:
+      kind: Deployment
+      name: calibration-service
+
+  # Set execution mode for production (could be live or paper)
+  - patch: |-
+      - op: replace
+        path: /data/mode
+        value: paper
+    target:
+      kind: ConfigMap
+      name: execution-config
+
+  # Production ingress with proper hostname
+  - patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: api.quant-trading.com
+      - op: replace
+        path: /spec/tls/0/hosts/0
+        value: api.quant-trading.com
+    target:
+      kind: Ingress
+      name: quant-trading-ingress
+
+# ConfigMap overrides for production
+configMapGenerator:
+  - name: prod-settings
+    literals:
+      - LOG_LEVEL=INFO
+      - DEBUG=false
+      - ENVIRONMENT=production
+
+# Use specific image tags for production (pinned versions)
+images:
+  - name: quant-trading/api
+    newTag: v1.0.0
+  - name: quant-trading/calibration
+    newTag: v1.0.0
+  - name: quant-trading/data-ingestion
+    newTag: v1.0.0
+  - name: quant-trading/execution
+    newTag: v1.0.0
+  - name: quant-trading/signals
+    newTag: v1.0.0

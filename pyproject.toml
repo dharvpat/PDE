@@ -37,6 +37,8 @@ dependencies = [
     "scipy>=1.10",
     "pandas>=2.0",
     "pybind11>=2.11",
+    "yfinance>=0.2.0",
+    "requests>=2.28",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +54,9 @@ docs = [
     "sphinx>=6.0",
     "sphinx-rtd-theme>=1.0",
 ]
+
+[project.scripts]
+quant-trading = "quant_trading.cli:main"
 
 [project.urls]
 "Homepage" = "https://github.com/quant-research/quant-trading"

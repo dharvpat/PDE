@@ -1,0 +1,39 @@
+# Kubernetes Namespace for Quantitative Trading System
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: quant-trading
+  labels:
+    app.kubernetes.io/name: quant-trading
+    app.kubernetes.io/component: platform
+---
+# Resource Quota for the namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: quant-trading-quota
+  namespace: quant-trading
+spec:
+  hard:
+    requests.cpu: "32"
+    requests.memory: 64Gi
+    limits.cpu: "64"
+    limits.memory: 128Gi
+    persistentvolumeclaims: "20"
+    pods: "50"
+---
+# Limit Range for default resource limits
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: quant-trading-limits
+  namespace: quant-trading
+spec:
+  limits:
+    - default:
+        memory: 1Gi
+        cpu: "1"
+      defaultRequest:
+        memory: 256Mi
+        cpu: "250m"
+      type: Container

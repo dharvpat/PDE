@@ -1,0 +1,43 @@
+# Execution Service Dockerfile
+# Order execution and broker integration
+#
+# Handles:
+# - Order routing
+# - Position management
+# - Broker API integration
+# - Smart order routing
+#
+# Usage:
+#   docker build -f deploy/docker/Dockerfile.execution -t quant-trading/execution:latest .
+
+ARG BASE_IMAGE=quant-trading/base:latest
+FROM ${BASE_IMAGE}
+
+# Execution service environment variables
+ENV SERVICE_NAME=execution-service
+ENV LOG_LEVEL=INFO
+ENV MAX_ORDER_SIZE=10000
+ENV EXECUTION_MODE=paper
+
+# Install execution dependencies
+RUN pip install --no-cache-dir \
+    asyncpg \
+    redis \
+    aiohttp \
+    pika
+
+# Copy execution code
+COPY src/python/quant_trading/execution/ /app/src/python/quant_trading/execution/
+COPY src/python/quant_trading/risk/ /app/src/python/quant_trading/risk/
+
+# Expose execution port
+EXPOSE 8083
+
+# Execution health check (critical - must be responsive)
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 \
+    CMD curl -f http://localhost:8083/health || exit 1
+
+# Run execution service
+CMD ["python", "-m", "quant_trading.execution.service", \
+     "--host", "0.0.0.0", \
+     "--port", "8083"]

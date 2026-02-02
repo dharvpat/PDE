@@ -1,0 +1,44 @@
+# Data Ingestion Service Dockerfile
+# Market data collection and processing
+#
+# Handles:
+# - Real-time market data feeds
+# - Options chain data
+# - Historical data backfilling
+#
+# Usage:
+#   docker build -f deploy/docker/Dockerfile.data-ingestion -t quant-trading/data-ingestion:latest .
+
+ARG BASE_IMAGE=quant-trading/base:latest
+FROM ${BASE_IMAGE}
+
+# Data ingestion environment variables
+ENV SERVICE_NAME=data-ingestion
+ENV LOG_LEVEL=INFO
+ENV BATCH_SIZE=1000
+ENV FLUSH_INTERVAL_SECONDS=5
+
+# Install data ingestion dependencies
+RUN pip install --no-cache-dir \
+    aiohttp \
+    websockets \
+    asyncpg \
+    redis \
+    pika \
+    yfinance \
+    polygon-api-client
+
+# Copy data ingestion code
+COPY src/python/quant_trading/data/ /app/src/python/quant_trading/data/
+
+# Expose metrics port
+EXPOSE 8082
+
+# Data ingestion health check (checks connection to data sources)
+HEALTHCHECK --interval=30s --timeout=15s --start-period=45s --retries=3 \
+    CMD curl -f http://localhost:8082/health || exit 1
+
+# Run data ingestion service
+CMD ["python", "-m", "quant_trading.data.service", \
+     "--host", "0.0.0.0", \
+     "--port", "8082"]

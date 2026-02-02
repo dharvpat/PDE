@@ -1,0 +1,37 @@
+{
+  "database": {
+    "url": "sqlite:///data/quant_trading.db",
+    "pool_size": 5,
+    "max_overflow": 10,
+    "echo": false
+  },
+  "model": {
+    "heston_kappa_bounds": [0.1, 10.0],
+    "heston_theta_bounds": [0.01, 1.0],
+    "heston_sigma_bounds": [0.1, 2.0],
+    "heston_rho_bounds": [-0.99, 0.0],
+    "heston_v0_bounds": [0.01, 1.0],
+    "sabr_beta": 0.5,
+    "ou_lookback_days": 60
+  },
+  "trading": {
+    "initial_capital": 100000.0,
+    "max_position_pct": 0.10,
+    "max_drawdown_pct": 0.25,
+    "min_signal_confidence": 0.6,
+    "commission_per_share": 0.005,
+    "slippage_bps": 5.0
+  },
+  "backtest": {
+    "start_date": null,
+    "end_date": null,
+    "monte_carlo_simulations": 1000,
+    "walk_forward_enabled": true
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/quant_trading.log"
+  },
+  "env": "development",
+  "debug": false
+}

@@ -1,0 +1,40 @@
+# Helm Chart for Quantitative Trading System
+apiVersion: v2
+name: quant-trading
+description: A Helm chart for deploying the Quantitative Trading System
+
+type: application
+
+version: 0.1.0
+appVersion: "1.0.0"
+
+keywords:
+  - trading
+  - quantitative
+  - finance
+  - timescaledb
+  - redis
+
+home: https://github.com/example/quant-trading
+
+sources:
+  - https://github.com/example/quant-trading
+
+maintainers:
+  - name: Quant Team
+    email: quant@example.com
+
+dependencies:
+  - name: redis
+    version: "17.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+  - name: postgresql
+    version: "12.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
+    alias: timescaledb
+  - name: rabbitmq
+    version: "12.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: rabbitmq.enabled

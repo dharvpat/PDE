@@ -1,0 +1,1239 @@
+openapi: 3.0.3
+info:
+  title: Quantitative Trading System API
+  description: |
+    REST API for the Quantitative Trading Platform.
+
+    ## Overview
+    This API provides access to:
+    - Strategy management and monitoring
+    - Signal generation and retrieval
+    - Portfolio and position management
+    - Risk metrics and monitoring
+    - Model calibration status
+    - Execution management
+
+    ## Authentication
+    All endpoints require JWT authentication via Bearer token.
+    Obtain tokens via the `/auth/token` endpoint.
+
+    ## Rate Limiting
+    - Standard tier: 100 requests/minute
+    - Premium tier: 1000 requests/minute
+
+    ## Versioning
+    API version is specified in the URL path (e.g., `/v1/`).
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@trading.example.com
+  license:
+    name: Proprietary
+    url: https://trading.example.com/license
+
+servers:
+  - url: https://api.trading.example.com/v1
+    description: Production server
+  - url: https://staging-api.trading.example.com/v1
+    description: Staging server
+  - url: http://localhost:8000/v1
+    description: Local development
+
+tags:
+  - name: Authentication
+    description: Authentication and authorization
+  - name: Strategies
+    description: Strategy management
+  - name: Signals
+    description: Trading signals
+  - name: Portfolio
+    description: Portfolio and positions
+  - name: Risk
+    description: Risk metrics and monitoring
+  - name: Calibration
+    description: Model calibration
+  - name: Execution
+    description: Order execution
+  - name: Health
+    description: System health checks
+
+paths:
+  /auth/token:
+    post:
+      tags:
+        - Authentication
+      summary: Obtain access token
+      description: Exchange credentials for JWT access token
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+                  format: password
+              required:
+                - username
+                - password
+      responses:
+        '200':
+          description: Token obtained successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /strategies:
+    get:
+      tags:
+        - Strategies
+      summary: List all strategies
+      description: Retrieve list of all trading strategies
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          description: Filter by strategy status
+          schema:
+            type: string
+            enum: [active, paused, stopped]
+        - name: type
+          in: query
+          description: Filter by strategy type
+          schema:
+            type: string
+            enum: [volatility_arbitrage, mean_reversion, term_structure]
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Strategy'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - Strategies
+      summary: Create a new strategy
+      description: Create and configure a new trading strategy
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StrategyCreate'
+      responses:
+        '201':
+          description: Strategy created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Strategy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /strategies/{strategy_id}:
+    get:
+      tags:
+        - Strategies
+      summary: Get strategy details
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/StrategyId'
+      responses:
+        '200':
+          description: Strategy details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StrategyDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags:
+        - Strategies
+      summary: Update strategy
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/StrategyId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StrategyUpdate'
+      responses:
+        '200':
+          description: Strategy updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Strategy'
+
+    delete:
+      tags:
+        - Strategies
+      summary: Delete strategy
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/StrategyId'
+      responses:
+        '204':
+          description: Strategy deleted
+
+  /strategies/{strategy_id}/signals:
+    get:
+      tags:
+        - Signals
+      summary: Get signals for strategy
+      description: Retrieve trading signals generated by a specific strategy
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/StrategyId'
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: signal_type
+          in: query
+          schema:
+            type: string
+            enum: [LONG, SHORT, EXIT_LONG, EXIT_SHORT]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 1000
+      responses:
+        '200':
+          description: Signals retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Signal'
+
+  /signals:
+    get:
+      tags:
+        - Signals
+      summary: Get all signals
+      description: Retrieve trading signals across all strategies
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: symbol
+          in: query
+          schema:
+            type: string
+        - name: min_confidence
+          in: query
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+      responses:
+        '200':
+          description: Signals retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Signal'
+
+  /signals/active:
+    get:
+      tags:
+        - Signals
+      summary: Get active signals
+      description: Retrieve currently active trading signals
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Active signals
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Signal'
+
+  /portfolio/positions:
+    get:
+      tags:
+        - Portfolio
+      summary: Get current positions
+      description: Retrieve all current portfolio positions
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Current positions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Position'
+
+  /portfolio/positions/{symbol}:
+    get:
+      tags:
+        - Portfolio
+      summary: Get position for symbol
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Position details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Position'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /portfolio/summary:
+    get:
+      tags:
+        - Portfolio
+      summary: Get portfolio summary
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Portfolio summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioSummary'
+
+  /portfolio/history:
+    get:
+      tags:
+        - Portfolio
+      summary: Get portfolio history
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: interval
+          in: query
+          schema:
+            type: string
+            enum: [1h, 1d, 1w]
+            default: 1d
+      responses:
+        '200':
+          description: Portfolio history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PortfolioSnapshot'
+
+  /risk/metrics:
+    get:
+      tags:
+        - Risk
+      summary: Get current risk metrics
+      description: Retrieve comprehensive portfolio risk metrics
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Risk metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RiskMetrics'
+
+  /risk/var:
+    get:
+      tags:
+        - Risk
+      summary: Get Value at Risk
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: confidence
+          in: query
+          schema:
+            type: number
+            default: 0.95
+        - name: horizon
+          in: query
+          description: Days
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: VaR calculation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaRResult'
+
+  /risk/greeks:
+    get:
+      tags:
+        - Risk
+      summary: Get portfolio Greeks
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Portfolio Greeks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioGreeks'
+
+  /calibration/status:
+    get:
+      tags:
+        - Calibration
+      summary: Get calibration status
+      description: Get status of model calibrations
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Calibration status
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CalibrationStatus'
+
+  /calibration/heston:
+    get:
+      tags:
+        - Calibration
+      summary: Get Heston model parameters
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Heston parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HestonParameters'
+
+    post:
+      tags:
+        - Calibration
+      summary: Trigger Heston calibration
+      security:
+        - BearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                symbol:
+                  type: string
+                force:
+                  type: boolean
+                  default: false
+      responses:
+        '202':
+          description: Calibration started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalibrationJob'
+
+  /calibration/sabr:
+    get:
+      tags:
+        - Calibration
+      summary: Get SABR model parameters
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          schema:
+            type: string
+        - name: maturity
+          in: query
+          schema:
+            type: number
+      responses:
+        '200':
+          description: SABR parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SABRParameters'
+
+  /calibration/ou:
+    get:
+      tags:
+        - Calibration
+      summary: Get OU process parameters
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: pair
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OU parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OUParameters'
+
+  /orders:
+    get:
+      tags:
+        - Execution
+      summary: Get orders
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, open, filled, cancelled, rejected]
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Orders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Order'
+
+    post:
+      tags:
+        - Execution
+      summary: Submit order
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderCreate'
+      responses:
+        '201':
+          description: Order submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+
+  /orders/{order_id}:
+    get:
+      tags:
+        - Execution
+      summary: Get order details
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+
+    delete:
+      tags:
+        - Execution
+      summary: Cancel order
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+
+  /executions:
+    get:
+      tags:
+        - Execution
+      summary: Get executions
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: start_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: end_date
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: symbol
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Executions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Execution'
+
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'
+
+  /health/ready:
+    get:
+      tags:
+        - Health
+      summary: Readiness check
+      responses:
+        '200':
+          description: Service ready
+        '503':
+          description: Service not ready
+
+  /health/live:
+    get:
+      tags:
+        - Health
+      summary: Liveness check
+      responses:
+        '200':
+          description: Service alive
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    StrategyId:
+      name: strategy_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Unique strategy identifier
+
+  responses:
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    TokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          example: bearer
+        expires_in:
+          type: integer
+          example: 3600
+
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+
+    Strategy:
+      type: object
+      properties:
+        strategy_id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum: [volatility_arbitrage, mean_reversion, term_structure]
+        status:
+          type: string
+          enum: [active, paused, stopped]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        sharpe_ratio:
+          type: number
+        total_return:
+          type: number
+        max_drawdown:
+          type: number
+
+    StrategyCreate:
+      type: object
+      required:
+        - name
+        - type
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [volatility_arbitrage, mean_reversion, term_structure]
+        parameters:
+          type: object
+        risk_limits:
+          $ref: '#/components/schemas/RiskLimits'
+        symbols:
+          type: array
+          items:
+            type: string
+
+    StrategyUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, paused, stopped]
+        parameters:
+          type: object
+        risk_limits:
+          $ref: '#/components/schemas/RiskLimits'
+
+    StrategyDetail:
+      allOf:
+        - $ref: '#/components/schemas/Strategy'
+        - type: object
+          properties:
+            parameters:
+              type: object
+            risk_limits:
+              $ref: '#/components/schemas/RiskLimits'
+            symbols:
+              type: array
+              items:
+                type: string
+            performance:
+              $ref: '#/components/schemas/PerformanceMetrics'
+
+    RiskLimits:
+      type: object
+      properties:
+        max_daily_loss:
+          type: number
+        max_position_size:
+          type: number
+        max_total_exposure:
+          type: number
+        max_drawdown:
+          type: number
+
+    PerformanceMetrics:
+      type: object
+      properties:
+        sharpe_ratio:
+          type: number
+        sortino_ratio:
+          type: number
+        total_return:
+          type: number
+        annualized_return:
+          type: number
+        max_drawdown:
+          type: number
+        win_rate:
+          type: number
+        profit_factor:
+          type: number
+
+    Signal:
+      type: object
+      properties:
+        signal_id:
+          type: string
+        strategy_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        symbol:
+          type: string
+        signal_type:
+          type: string
+          enum: [LONG, SHORT, EXIT_LONG, EXIT_SHORT]
+        strength:
+          type: number
+          minimum: 0
+          maximum: 1
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        target_price:
+          type: number
+        stop_loss:
+          type: number
+        metadata:
+          type: object
+
+    Position:
+      type: object
+      properties:
+        symbol:
+          type: string
+        quantity:
+          type: number
+        average_cost:
+          type: number
+        market_value:
+          type: number
+        unrealized_pnl:
+          type: number
+        realized_pnl:
+          type: number
+        delta:
+          type: number
+        gamma:
+          type: number
+        vega:
+          type: number
+        theta:
+          type: number
+        strategy_id:
+          type: string
+
+    PortfolioSummary:
+      type: object
+      properties:
+        total_value:
+          type: number
+        cash:
+          type: number
+        positions_value:
+          type: number
+        total_pnl:
+          type: number
+        unrealized_pnl:
+          type: number
+        realized_pnl:
+          type: number
+        total_exposure:
+          type: number
+        net_exposure:
+          type: number
+
+    PortfolioSnapshot:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        total_value:
+          type: number
+        pnl:
+          type: number
+        positions_count:
+          type: integer
+
+    RiskMetrics:
+      type: object
+      properties:
+        total_exposure:
+          type: number
+        net_exposure:
+          type: number
+        var_95:
+          type: number
+        var_99:
+          type: number
+        expected_shortfall:
+          type: number
+        max_drawdown:
+          type: number
+        current_drawdown:
+          type: number
+        sharpe_ratio:
+          type: number
+        beta:
+          type: number
+        correlation_to_market:
+          type: number
+
+    VaRResult:
+      type: object
+      properties:
+        confidence:
+          type: number
+        horizon_days:
+          type: integer
+        var_absolute:
+          type: number
+        var_percentage:
+          type: number
+        method:
+          type: string
+          enum: [historical, parametric, monte_carlo]
+
+    PortfolioGreeks:
+      type: object
+      properties:
+        total_delta:
+          type: number
+        total_gamma:
+          type: number
+        total_vega:
+          type: number
+        total_theta:
+          type: number
+        delta_by_underlying:
+          type: object
+          additionalProperties:
+            type: number
+
+    CalibrationStatus:
+      type: object
+      properties:
+        model:
+          type: string
+          enum: [heston, sabr, ou]
+        symbol:
+          type: string
+        last_calibration:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [current, stale, failed]
+        fit_quality:
+          type: number
+
+    CalibrationJob:
+      type: object
+      properties:
+        job_id:
+          type: string
+        model:
+          type: string
+        symbol:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, completed, failed]
+        started_at:
+          type: string
+          format: date-time
+
+    HestonParameters:
+      type: object
+      properties:
+        symbol:
+          type: string
+        calibrated_at:
+          type: string
+          format: date-time
+        kappa:
+          type: number
+          description: Mean-reversion speed
+        theta:
+          type: number
+          description: Long-term variance
+        sigma:
+          type: number
+          description: Vol of vol
+        rho:
+          type: number
+          description: Correlation
+        v0:
+          type: number
+          description: Initial variance
+        feller_satisfied:
+          type: boolean
+        rmse:
+          type: number
+
+    SABRParameters:
+      type: object
+      properties:
+        symbol:
+          type: string
+        maturity:
+          type: number
+        calibrated_at:
+          type: string
+          format: date-time
+        alpha:
+          type: number
+        beta:
+          type: number
+        rho:
+          type: number
+        nu:
+          type: number
+        rmse:
+          type: number
+
+    OUParameters:
+      type: object
+      properties:
+        pair:
+          type: string
+        calibrated_at:
+          type: string
+          format: date-time
+        theta:
+          type: number
+          description: Long-term mean
+        mu:
+          type: number
+          description: Mean-reversion speed
+        sigma:
+          type: number
+          description: Volatility
+        half_life:
+          type: number
+          description: Days
+        optimal_entry_lower:
+          type: number
+        optimal_entry_upper:
+          type: number
+
+    Order:
+      type: object
+      properties:
+        order_id:
+          type: string
+        strategy_id:
+          type: string
+        symbol:
+          type: string
+        side:
+          type: string
+          enum: [buy, sell]
+        order_type:
+          type: string
+          enum: [market, limit, stop, stop_limit]
+        quantity:
+          type: number
+        price:
+          type: number
+        stop_price:
+          type: number
+        time_in_force:
+          type: string
+          enum: [day, gtc, ioc, fok]
+        status:
+          type: string
+          enum: [pending, open, filled, partially_filled, cancelled, rejected]
+        filled_quantity:
+          type: number
+        average_fill_price:
+          type: number
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    OrderCreate:
+      type: object
+      required:
+        - symbol
+        - side
+        - order_type
+        - quantity
+      properties:
+        strategy_id:
+          type: string
+        symbol:
+          type: string
+        side:
+          type: string
+          enum: [buy, sell]
+        order_type:
+          type: string
+          enum: [market, limit, stop, stop_limit]
+        quantity:
+          type: number
+        price:
+          type: number
+        stop_price:
+          type: number
+        time_in_force:
+          type: string
+          enum: [day, gtc, ioc, fok]
+          default: day
+
+    Execution:
+      type: object
+      properties:
+        execution_id:
+          type: string
+        order_id:
+          type: string
+        symbol:
+          type: string
+        side:
+          type: string
+          enum: [buy, sell]
+        quantity:
+          type: number
+        price:
+          type: number
+        commission:
+          type: number
+        executed_at:
+          type: string
+          format: date-time
+        venue:
+          type: string
+
+    HealthCheck:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        version:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        components:
+          type: object
+          properties:
+            database:
+              type: string
+            cache:
+              type: string
+            queue:
+              type: string

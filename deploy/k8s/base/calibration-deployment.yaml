@@ -1,0 +1,159 @@
+# Calibration Service Deployment
+# High-performance model calibration (Heston, SABR, OU)
+#
+# Reference: Section 12.2 of design-doc.md
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: calibration-service
+  namespace: quant-trading
+  labels:
+    app.kubernetes.io/name: calibration-service
+    app.kubernetes.io/component: calibration
+    app.kubernetes.io/part-of: quant-trading
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: calibration
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: calibration
+        app.kubernetes.io/name: calibration-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: quant-trading-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: calibration
+          image: quant-trading/calibration:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          env:
+            - name: SERVICE_NAME
+              value: calibration-service
+            - name: LOG_LEVEL
+              value: INFO
+            - name: OMP_NUM_THREADS
+              value: "8"
+            - name: MKL_NUM_THREADS
+              value: "8"
+            - name: NUMEXPR_NUM_THREADS
+              value: "8"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: url
+            - name: REDIS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: redis-config
+                  key: url
+          resources:
+            requests:
+              memory: "16Gi"
+              cpu: "8"
+            limits:
+              memory: "32Gi"
+              cpu: "16"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app/config
+              readOnly: true
+            - name: cache-volume
+              mountPath: /app/cache
+      volumes:
+        - name: config-volume
+          configMap:
+            name: calibration-config
+        - name: cache-volume
+          emptyDir:
+            sizeLimit: 10Gi
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: node.kubernetes.io/instance-type
+                    operator: In
+                    values:
+                      - c5.4xlarge
+                      - c5.9xlarge
+                      - c6i.4xlarge
+                      - c6i.8xlarge
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: calibration
+                topologyKey: kubernetes.io/hostname
+      tolerations:
+        - key: "workload"
+          operator: "Equal"
+          value: "compute"
+          effect: "NoSchedule"
+---
+# Calibration Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: calibration-service
+  namespace: quant-trading
+  labels:
+    app.kubernetes.io/name: calibration-service
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: calibration
+---
+# Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: calibration-pdb
+  namespace: quant-trading
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: calibration

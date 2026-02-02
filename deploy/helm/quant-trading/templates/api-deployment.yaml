@@ -1,0 +1,113 @@
+{{- if .Values.apiServer.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "quant-trading.fullname" . }}-api
+  labels:
+    {{- include "quant-trading.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.apiServer.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "quant-trading.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        {{- include "quant-trading.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.apiServer.service.targetPort }}"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: {{ include "quant-trading.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: api
+          image: "{{ .Values.apiServer.image.repository }}:{{ .Values.apiServer.image.tag }}"
+          imagePullPolicy: {{ .Values.apiServer.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.apiServer.service.targetPort }}
+              protocol: TCP
+          env:
+            - name: SERVICE_NAME
+              value: api-server
+            - name: LOG_LEVEL
+              value: {{ .Values.apiServer.config.logLevel }}
+            - name: WORKERS
+              value: "{{ .Values.apiServer.config.workers }}"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "quant-trading.fullname" . }}-secrets
+                  key: database-url
+            - name: REDIS_URL
+              value: {{ include "quant-trading.redisUrl" . }}
+          resources:
+            {{- toYaml .Values.apiServer.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.apiServer.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.apiServer.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.apiServer.probes.liveness.periodSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.apiServer.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.apiServer.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.apiServer.probes.readiness.periodSeconds }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "quant-trading.fullname" . }}-api
+  labels:
+    {{- include "quant-trading.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  type: {{ .Values.apiServer.service.type }}
+  ports:
+    - port: {{ .Values.apiServer.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "quant-trading.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+{{- if .Values.apiServer.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "quant-trading.fullname" . }}-api
+  labels:
+    {{- include "quant-trading.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "quant-trading.fullname" . }}-api
+  minReplicas: {{ .Values.apiServer.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.apiServer.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.apiServer.autoscaling.targetCPUUtilization }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.apiServer.autoscaling.targetMemoryUtilization }}
+{{- end }}
+{{- end }}

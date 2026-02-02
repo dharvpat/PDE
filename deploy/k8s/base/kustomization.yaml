@@ -1,0 +1,39 @@
+# Kustomization for Quantitative Trading System - Base
+# Base resources that are common across all environments
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: quant-trading
+
+# Common labels for all resources
+commonLabels:
+  app.kubernetes.io/managed-by: kustomize
+  app.kubernetes.io/part-of: quant-trading
+
+# Resources to include
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - configmaps.yaml
+  - secrets.yaml
+  - timescaledb-statefulset.yaml
+  - redis-statefulset.yaml
+  - api-deployment.yaml
+  - calibration-deployment.yaml
+  - data-ingestion-deployment.yaml
+  - execution-deployment.yaml
+  - signals-deployment.yaml
+  - ingress.yaml
+
+# Images (can be overridden in overlays)
+images:
+  - name: quant-trading/api
+    newTag: latest
+  - name: quant-trading/calibration
+    newTag: latest
+  - name: quant-trading/data-ingestion
+    newTag: latest
+  - name: quant-trading/execution
+    newTag: latest
+  - name: quant-trading/signals
+    newTag: latest
