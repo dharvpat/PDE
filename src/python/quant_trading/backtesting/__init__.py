@@ -119,6 +119,28 @@ from .multi_strategy import (
     get_optimal_strategy,
 )
 
+from .sector_portfolio import (
+    Sector,
+    SECTOR_STOCKS,
+    SECTOR_STRATEGIES,
+    STOCK_TO_SECTOR,
+    get_sector,
+    get_sector_strategy,
+    get_all_stocks,
+    get_stocks_by_sector,
+    ConfidenceMetrics,
+    ConfidenceCalculator,
+    calculate_position_size,
+)
+
+from .sector_optimizer import (
+    OptimizationResult,
+    SectorAlgorithmFitness,
+    SectorOptimizationResults,
+    SectorAlgorithmOptimizer,
+    print_optimization_results,
+)
+
 from .engine import (
     BacktestEngine,
     BacktestResults,
@@ -174,6 +196,24 @@ __all__ = [
     "MultiStrategyManager",
     "OPTIMAL_STRATEGIES",
     "get_optimal_strategy",
+    # Sector portfolio
+    "Sector",
+    "SECTOR_STOCKS",
+    "SECTOR_STRATEGIES",
+    "STOCK_TO_SECTOR",
+    "get_sector",
+    "get_sector_strategy",
+    "get_all_stocks",
+    "get_stocks_by_sector",
+    "ConfidenceMetrics",
+    "ConfidenceCalculator",
+    "calculate_position_size",
+    # Sector optimizer
+    "OptimizationResult",
+    "SectorAlgorithmFitness",
+    "SectorOptimizationResults",
+    "SectorAlgorithmOptimizer",
+    "print_optimization_results",
     # Engine
     "BacktestEngine",
     "BacktestResults",

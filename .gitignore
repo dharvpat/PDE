@@ -68,3 +68,5 @@ credentials.json
 .claude
 agents
 CLAUDE.md
+
+.optimization_cache/

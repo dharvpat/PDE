@@ -540,6 +540,485 @@ def cmd_portfolio(args):
     return 0
 
 
+def cmd_scan(args):
+    """Scan stocks by sector and rank by confidence."""
+    print(f"\n{'='*70}")
+    print("QUANTITATIVE TRADING SYSTEM - SECTOR SCANNER")
+    print(f"{'='*70}\n")
+
+    from .backtesting import (
+        Sector,
+        SECTOR_STOCKS,
+        get_sector,
+        get_sector_strategy,
+        ConfidenceCalculator,
+        calculate_position_size,
+    )
+
+    # Determine which sectors to scan
+    if args.sector:
+        try:
+            sectors = [Sector(args.sector.lower())]
+        except ValueError:
+            print(f"Unknown sector: {args.sector}")
+            print(f"Available: {[s.value for s in Sector]}")
+            return 1
+    else:
+        # All sectors
+        sectors = list(Sector)
+
+    # Date range for data
+    end = args.end or datetime.now().strftime("%Y-%m-%d")
+    start = args.start or (datetime.now() - pd.Timedelta(days=90)).strftime("%Y-%m-%d")
+
+    print(f"Scanning {len(sectors)} sector(s)")
+    print(f"Data period: {start} to {end}")
+    print(f"Top {args.top} stocks per sector\n")
+
+    # Initialize confidence calculator
+    calc = ConfidenceCalculator(lookback_days=60)
+
+    all_results = []
+
+    for sector in sectors:
+        stocks = SECTOR_STOCKS.get(sector, [])
+        if not stocks:
+            continue
+
+        print(f"\n{sector.value.upper().replace('_', ' ')} ({len(stocks)} stocks)")
+        print("-" * 60)
+
+        sector_results = []
+
+        for symbol in stocks[:args.limit]:  # Limit per sector to avoid rate limits
+            try:
+                data = fetch_yfinance_data(symbol, start, end)
+                if len(data) < 30:
+                    continue
+
+                prices = data['Close'].values
+
+                # Get sector strategy
+                strategy_config = get_sector_strategy(symbol)
+
+                # Calculate confidence
+                metrics = calc.calculate(symbol, prices, signal_strength=0.5)
+
+                # Calculate suggested position size
+                base_alloc = 1.0 / max(10, len(stocks))
+                position_size = calculate_position_size(
+                    metrics.confidence,
+                    base_alloc,
+                    min_allocation=0.02,
+                    max_allocation=0.10,
+                )
+
+                sector_results.append({
+                    'symbol': symbol,
+                    'sector': sector.value,
+                    'strategy': strategy_config['type'],
+                    'confidence': metrics.confidence,
+                    'momentum': metrics.momentum_strength,
+                    'trend': metrics.trend_alignment,
+                    'half_life': metrics.half_life_days,
+                    'volatility': metrics.realized_volatility,
+                    'position_size': position_size,
+                    'current_price': prices[-1],
+                })
+
+            except Exception as e:
+                if args.verbose:
+                    print(f"  {symbol}: Error - {e}")
+
+        # Sort by confidence and show top N
+        sector_results.sort(key=lambda x: x['confidence'], reverse=True)
+
+        for i, r in enumerate(sector_results[:args.top]):
+            direction = "↑" if r['momentum'] > 0.05 else ("↓" if r['momentum'] < -0.05 else "→")
+            hl = f"{r['half_life']:.0f}d" if r['half_life'] < 1000 else "N/A"
+            print(
+                f"  {i+1}. {r['symbol']:6s} | "
+                f"Conf: {r['confidence']:.2f} | "
+                f"Mom: {r['momentum']:+.2f} {direction} | "
+                f"HL: {hl:>5s} | "
+                f"Vol: {r['volatility']*100:.1f}% | "
+                f"Size: {r['position_size']*100:.1f}% | "
+                f"${r['current_price']:.2f}"
+            )
+
+        all_results.extend(sector_results)
+
+    # Show overall top picks across all sectors
+    if len(sectors) > 1 and all_results:
+        all_results.sort(key=lambda x: x['confidence'], reverse=True)
+        print(f"\n{'='*70}")
+        print(f"TOP {min(args.top, len(all_results))} OVERALL PICKS")
+        print("=" * 70)
+
+        for i, r in enumerate(all_results[:args.top]):
+            direction = "↑" if r['momentum'] > 0.05 else ("↓" if r['momentum'] < -0.05 else "→")
+            print(
+                f"  {i+1}. {r['symbol']:6s} ({r['sector']:12s}) | "
+                f"Conf: {r['confidence']:.2f} | "
+                f"Strategy: {r['strategy']:12s} | "
+                f"Size: {r['position_size']*100:.1f}%"
+            )
+
+    return 0
+
+
+def cmd_sector_portfolio(args):
+    """Run sector-diversified portfolio with confidence-weighted sizing."""
+    print(f"\n{'='*70}")
+    print("QUANTITATIVE TRADING SYSTEM - SECTOR-DIVERSIFIED PORTFOLIO")
+    print(f"{'='*70}\n")
+
+    from .backtesting import (
+        BacktestEngine,
+        HistoricDataFrameHandler,
+        Portfolio,
+        InstantExecutionHandler,
+        MultiStrategyManager,
+        Sector,
+        SECTOR_STOCKS,
+        get_sector,
+        get_sector_strategy,
+        ConfidenceCalculator,
+        calculate_position_size,
+        SectorOptimizationResults,
+    )
+    from queue import Queue
+    from pathlib import Path
+
+    # Load optimization results if requested
+    optimization_results = None
+    if args.use_optimized:
+        cache_dir = Path(args.optimized_cache) if args.optimized_cache else Path(".optimization_cache")
+        cache_file = cache_dir / "sector_optimization_latest.json"
+
+        if cache_file.exists():
+            try:
+                optimization_results = SectorOptimizationResults.load(cache_file)
+                print(f"Loaded optimization results from: {cache_file}")
+                print(f"Optimization date: {optimization_results.optimization_date}")
+            except Exception as e:
+                print(f"Warning: Failed to load optimization results: {e}")
+                print("Continuing without optimization data...")
+        else:
+            print(f"Warning: No optimization cache found at {cache_file}")
+            print("Run 'optimize-sectors' first or continue without optimization...")
+
+    # Parse sectors
+    if args.sectors:
+        sector_names = [s.strip().lower() for s in args.sectors.split(",")]
+        sectors = []
+        for name in sector_names:
+            try:
+                sectors.append(Sector(name))
+            except ValueError:
+                print(f"Unknown sector: {name}")
+                return 1
+    else:
+        # Default diversified mix - all 12 non-ETF sectors for ~100 stock portfolio
+        sectors = [
+            Sector.TECHNOLOGY,
+            Sector.FINANCIALS,
+            Sector.HEALTHCARE,
+            Sector.CONSUMER_DISCRETIONARY,
+            Sector.CONSUMER_STAPLES,
+            Sector.ENERGY,
+            Sector.INDUSTRIALS,
+            Sector.MATERIALS,
+            Sector.UTILITIES,
+            Sector.REAL_ESTATE,
+            Sector.COMMUNICATION,
+            # Exclude ETF_INDEX and ETF_SECTOR for individual stock portfolio
+        ]
+
+    print(f"Sectors: {', '.join(s.value for s in sectors)}")
+    print(f"Capital: ${args.capital:,.0f}")
+    print(f"Stocks per sector: {args.per_sector}")
+    print(f"Using optimization: {'Yes' if optimization_results else 'No'}")
+
+    # Date range
+    start = args.start or "2023-01-01"
+    end = args.end or datetime.now().strftime("%Y-%m-%d")
+    print(f"Period: {start} to {end}")
+    print()
+
+    # First pass: scan all stocks and rank by confidence
+    calc = ConfidenceCalculator(lookback_days=60, optimization_results=optimization_results)
+    scan_start = (pd.to_datetime(start) - pd.Timedelta(days=30)).strftime("%Y-%m-%d")
+
+    selected_stocks = []
+    print("Scanning sectors for top opportunities...")
+
+    for sector in sectors:
+        scan_limit = getattr(args, 'scan_limit', 30)
+        stocks = SECTOR_STOCKS.get(sector, [])[:scan_limit]
+        sector_candidates = []
+
+        # Get strategy config - use optimized if available
+        if optimization_results:
+            best_algo, best_params = optimization_results.get_best_algorithm(sector)
+            strategy_config = {
+                'type': best_algo,
+                'params': best_params,
+                'sector': sector.value,
+            }
+        else:
+            strategy_config = None  # Will use per-symbol default
+
+        for symbol in stocks:
+            try:
+                data = fetch_yfinance_data(symbol, scan_start, end)
+                if len(data) < 30:
+                    continue
+
+                prices = data['Close'].values
+
+                # Use optimized strategy for sector, or default per-symbol
+                if strategy_config:
+                    sym_strategy = strategy_config
+                    algorithm = strategy_config['type']
+                else:
+                    sym_strategy = get_sector_strategy(symbol)
+                    algorithm = sym_strategy['type']
+
+                metrics = calc.calculate(symbol, prices, signal_strength=0.5, algorithm=algorithm)
+
+                sector_candidates.append({
+                    'symbol': symbol,
+                    'sector': sector,
+                    'strategy': sym_strategy,
+                    'confidence': metrics.confidence,
+                    'fitness': metrics.sector_algorithm_fitness,
+                    'data': data,
+                })
+            except:
+                pass
+
+        # Select top N from each sector
+        sector_candidates.sort(key=lambda x: x['confidence'], reverse=True)
+        selected = sector_candidates[:args.per_sector]
+        selected_stocks.extend(selected)
+
+        if selected:
+            fitness_info = f" (fitness: {selected[0]['fitness']:.2f})" if optimization_results else ""
+            print(f"  {sector.value}: {', '.join(s['symbol'] for s in selected)}{fitness_info}")
+
+    if not selected_stocks:
+        print("Error: No stocks selected")
+        return 1
+
+    symbols = [s['symbol'] for s in selected_stocks]
+    print(f"\nSelected {len(symbols)} stocks across {len(sectors)} sectors")
+
+    # Fetch full data for selected stocks
+    print("\nFetching detailed market data...")
+    all_data = {}
+    min_date = None
+    max_date = None
+
+    for stock_info in selected_stocks:
+        symbol = stock_info['symbol']
+        data = stock_info['data']
+        data = data[(data.index >= start) & (data.index <= end)]
+
+        if len(data) < 20:
+            continue
+
+        all_data[symbol] = data
+
+        if min_date is None or data.index[0] > min_date:
+            min_date = data.index[0]
+        if max_date is None or data.index[-1] < max_date:
+            max_date = data.index[-1]
+
+    print(f"Aligned date range: {min_date.date()} to {max_date.date()}")
+
+    # Combine data
+    combined_data = pd.DataFrame(index=pd.date_range(min_date, max_date, freq='B'))
+
+    for symbol, data in all_data.items():
+        data = data[(data.index >= min_date) & (data.index <= max_date)]
+        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            if col in data.columns:
+                combined_data[f"{symbol}_{col}"] = data[col]
+
+    combined_data = combined_data.ffill().dropna()
+
+    events = Queue()
+
+    # Create data handler
+    data_handler = HistoricDataFrameHandler(
+        events_queue=events,
+        symbol_list=list(all_data.keys()),
+        data=combined_data,
+    )
+
+    # Create portfolio
+    max_position_pct = min(0.15, 1.5 / len(all_data))
+    portfolio = Portfolio(
+        initial_capital=args.capital,
+        max_position_pct=max_position_pct,
+    )
+
+    # Create execution handler
+    executor = InstantExecutionHandler(events_queue=events)
+
+    # Create multi-strategy manager with sector-specific strategies
+    strategy = MultiStrategyManager(
+        events_queue=events,
+        data_handler=data_handler,
+        portfolio=portfolio,
+    )
+
+    print("\nStrategy Assignments:")
+    print("-" * 60)
+
+    for stock_info in selected_stocks:
+        symbol = stock_info['symbol']
+        if symbol not in all_data:
+            continue
+        strat = stock_info['strategy']
+        strategy.add_strategy(symbol, strat['type'], **strat['params'])
+        print(f"  {symbol:6s} ({stock_info['sector'].value:12s}) -> {strat['type']:12s}")
+
+    print()
+
+    # Create and run backtest
+    engine = BacktestEngine(
+        data_handler=data_handler,
+        strategy=strategy,
+        portfolio=portfolio,
+        execution_handler=executor,
+    )
+
+    print("Running sector-diversified portfolio simulation...")
+    results = engine.run()
+
+    # Print results
+    print(f"\n{'='*70}")
+    print("SECTOR PORTFOLIO RESULTS")
+    print(f"{'='*70}")
+    print(results.summary())
+
+    # Sector breakdown
+    if results.trade_history:
+        print("\nPERFORMANCE BY SECTOR")
+        print("-" * 60)
+
+        sector_stats = {}
+        for trade in results.trade_history:
+            sym = trade.get('symbol', 'Unknown')
+            sector = get_sector(sym)
+            if sector not in sector_stats:
+                sector_stats[sector] = {'trades': 0, 'wins': 0, 'pnl': 0}
+            sector_stats[sector]['trades'] += 1
+            pnl = trade.get('pnl', 0)
+            sector_stats[sector]['pnl'] += pnl
+            if pnl > 0:
+                sector_stats[sector]['wins'] += 1
+
+        for sector, stats in sorted(sector_stats.items(), key=lambda x: x[1]['pnl'], reverse=True):
+            win_rate = (stats['wins'] / stats['trades'] * 100) if stats['trades'] > 0 else 0
+            print(f"  {sector.value:20s}: {stats['trades']:3d} trades, {win_rate:5.1f}% win rate, ${stats['pnl']:>10,.2f} P&L")
+
+    return 0
+
+
+def cmd_optimize_sectors(args):
+    """Run sector-algorithm optimization to find best pairings."""
+    print(f"\n{'='*70}")
+    print("QUANTITATIVE TRADING SYSTEM - SECTOR-ALGORITHM OPTIMIZATION")
+    print(f"{'='*70}\n")
+
+    from .backtesting import (
+        Sector,
+        SectorAlgorithmOptimizer,
+        print_optimization_results,
+    )
+    from pathlib import Path
+
+    # Parse sectors
+    if args.sectors:
+        sector_names = [s.strip().lower() for s in args.sectors.split(",")]
+        sectors = []
+        for name in sector_names:
+            try:
+                sectors.append(Sector(name))
+            except ValueError:
+                print(f"Unknown sector: {name}")
+                return 1
+    else:
+        sectors = None  # Will use all non-ETF sectors
+
+    # Parse algorithms
+    if args.algorithms:
+        algorithms = [a.strip().lower() for a in args.algorithms.split(",")]
+    else:
+        algorithms = None  # Will use all algorithms
+
+    # Cache directory
+    cache_dir = Path(args.cache_dir) if args.cache_dir else Path(".optimization_cache")
+
+    print(f"Stocks per sector: {args.n_stocks}")
+    print(f"Backtest days: {args.days}")
+    print(f"Parameter search: {'enabled' if not args.no_param_search else 'disabled'}")
+    print(f"Cache directory: {cache_dir}")
+
+    if args.start:
+        print(f"Start date: {args.start}")
+    if args.end:
+        print(f"End date: {args.end}")
+    print()
+
+    # Create optimizer
+    optimizer = SectorAlgorithmOptimizer(
+        n_stocks_per_sector=args.n_stocks,
+        backtest_days=args.days,
+        optimize_params=not args.no_param_search,
+        cache_dir=cache_dir,
+    )
+
+    # Check for cached results first
+    if not args.force:
+        cached = optimizer.load_cached_results()
+        if cached:
+            print("Using cached optimization results (use --force to re-run)")
+            print_optimization_results(cached)
+
+            if args.output:
+                output_path = Path(args.output)
+                cached.save(output_path)
+                print(f"\nResults saved to: {output_path}")
+
+            return 0
+
+    # Run optimization
+    print("Running optimization (this may take several minutes)...")
+    print("-" * 70)
+
+    results = optimizer.run_optimization(
+        sectors=sectors,
+        algorithms=algorithms,
+        start_date=args.start,
+        end_date=args.end,
+    )
+
+    # Print results
+    print_optimization_results(results)
+
+    # Save to custom output if specified
+    if args.output:
+        output_path = Path(args.output)
+        results.save(output_path)
+        print(f"\nResults saved to: {output_path}")
+
+    return 0
+
+
 def generate_synthetic_data(start: Optional[str], end: Optional[str]) -> pd.DataFrame:
     """Generate synthetic OHLCV data for demonstration."""
     from datetime import timedelta
@@ -598,6 +1077,15 @@ Examples:
 
   # Run multi-asset portfolio simulation (optimal strategies auto-assigned)
   quant-trading portfolio --symbols AAPL,MSFT,NVDA,GOOGL,META
+
+  # Scan all sectors for top opportunities
+  quant-trading scan --top 5
+
+  # Scan specific sector
+  quant-trading scan --sector technology --top 10
+
+  # Run sector-diversified portfolio with confidence weighting
+  quant-trading sector-portfolio --per-sector 3 --capital 100000
 
   # Run backtest with local data file
   quant-trading backtest --data prices.csv --start 2023-01-01 --end 2023-12-31
@@ -670,6 +1158,47 @@ Examples:
     portfolio_parser.add_argument("--end", "-e", help="End date (YYYY-MM-DD)")
     portfolio_parser.add_argument("--capital", type=float, default=100000, help="Initial capital (default: 100000)")
 
+    # Scan command - scan sectors for opportunities
+    scan_parser = subparsers.add_parser("scan", help="Scan stocks by sector and rank by confidence")
+    scan_parser.add_argument("--sector", help="Specific sector to scan (e.g., technology, financials)")
+    scan_parser.add_argument("--start", "-s", help="Start date for data (default: 90 days ago)")
+    scan_parser.add_argument("--end", "-e", help="End date for data (default: today)")
+    scan_parser.add_argument("--top", type=int, default=5, help="Top N stocks per sector (default: 5)")
+    scan_parser.add_argument("--limit", type=int, default=15, help="Max stocks to scan per sector (default: 15)")
+    scan_parser.add_argument("--verbose", "-v", action="store_true", help="Show errors")
+
+    # Sector portfolio command - diversified sector portfolio
+    sector_parser = subparsers.add_parser("sector-portfolio", help="Run sector-diversified portfolio with confidence weighting")
+    sector_parser.add_argument("--sectors", help="Comma-separated sectors (default: all major sectors)")
+    sector_parser.add_argument("--per-sector", type=int, default=8, help="Stocks per sector (default: 8)")
+    sector_parser.add_argument("--scan-limit", type=int, default=30, help="Max stocks to scan per sector (default: 30)")
+    sector_parser.add_argument("--start", "-s", help="Start date (YYYY-MM-DD)")
+    sector_parser.add_argument("--end", "-e", help="End date (YYYY-MM-DD)")
+    sector_parser.add_argument("--capital", type=float, default=100000, help="Initial capital (default: 100000)")
+    sector_parser.add_argument("--use-optimized", action="store_true",
+                                help="Use optimized sector-algorithm pairings from cache")
+    sector_parser.add_argument("--optimized-cache", default=".optimization_cache",
+                                help="Directory containing optimization results (default: .optimization_cache)")
+
+    # Optimize sectors command - find optimal sector-algorithm pairings
+    optimize_parser = subparsers.add_parser("optimize-sectors",
+                                             help="Run sector-algorithm optimization to find best pairings")
+    optimize_parser.add_argument("--sectors", help="Comma-separated sectors to optimize (default: all)")
+    optimize_parser.add_argument("--algorithms", help="Comma-separated algorithms to test (default: all)")
+    optimize_parser.add_argument("--n-stocks", type=int, default=10,
+                                  help="Stocks per sector to test (default: 10)")
+    optimize_parser.add_argument("--days", type=int, default=252,
+                                  help="Backtest days (default: 252)")
+    optimize_parser.add_argument("--start", "-s", help="Start date (YYYY-MM-DD)")
+    optimize_parser.add_argument("--end", "-e", help="End date (YYYY-MM-DD)")
+    optimize_parser.add_argument("--no-param-search", action="store_true",
+                                  help="Skip parameter optimization, use defaults")
+    optimize_parser.add_argument("--cache-dir", default=".optimization_cache",
+                                  help="Cache directory (default: .optimization_cache)")
+    optimize_parser.add_argument("--output", "-o", help="Output file for results (JSON)")
+    optimize_parser.add_argument("--force", action="store_true",
+                                  help="Force re-optimization even if cache exists")
+
     args = parser.parse_args()
 
     setup_logging(args.verbose, args.debug)
@@ -691,6 +1220,12 @@ Examples:
             return cmd_demo(args)
         elif args.command == "portfolio":
             return cmd_portfolio(args)
+        elif args.command == "scan":
+            return cmd_scan(args)
+        elif args.command == "sector-portfolio":
+            return cmd_sector_portfolio(args)
+        elif args.command == "optimize-sectors":
+            return cmd_optimize_sectors(args)
         else:
             parser.print_help()
             return 1
