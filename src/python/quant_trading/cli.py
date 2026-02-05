@@ -719,20 +719,12 @@ def cmd_sector_portfolio(args):
                 print(f"Unknown sector: {name}")
                 return 1
     else:
-        # Default diversified mix - all 12 non-ETF sectors for ~100 stock portfolio
+        # Default: optimized 3-sector portfolio (Tech/Fin/Energy)
+        # Based on 10-year rolling optimization backtest showing best risk-adjusted returns
         sectors = [
             Sector.TECHNOLOGY,
             Sector.FINANCIALS,
-            Sector.HEALTHCARE,
-            Sector.CONSUMER_DISCRETIONARY,
-            Sector.CONSUMER_STAPLES,
             Sector.ENERGY,
-            Sector.INDUSTRIALS,
-            Sector.MATERIALS,
-            Sector.UTILITIES,
-            Sector.REAL_ESTATE,
-            Sector.COMMUNICATION,
-            # Exclude ETF_INDEX and ETF_SECTOR for individual stock portfolio
         ]
 
     print(f"Sectors: {', '.join(s.value for s in sectors)}")
@@ -926,6 +918,230 @@ def cmd_sector_portfolio(args):
             print(f"  {sector.value:20s}: {stats['trades']:3d} trades, {win_rate:5.1f}% win rate, ${stats['pnl']:>10,.2f} P&L")
 
     return 0
+
+
+def cmd_rolling_backtest(args):
+    """Run rolling optimization backtest."""
+    print(f"\n{'='*70}")
+    print("QUANTITATIVE TRADING SYSTEM - ROLLING OPTIMIZATION BACKTEST")
+    print(f"{'='*70}\n")
+
+    from .backtesting import (
+        Sector,
+        RollingOptimizationBacktester,
+    )
+
+    # Parse sectors
+    if args.sectors:
+        sector_names = [s.strip().lower() for s in args.sectors.split(",")]
+        sectors = []
+        for name in sector_names:
+            try:
+                sectors.append(Sector(name))
+            except ValueError:
+                print(f"Unknown sector: {name}")
+                return 1
+    else:
+        # Default: Tech (40%), Financials (30%), Energy (30%)
+        # Based on 10-year backtest optimization showing Energy outperforms Healthcare
+        sectors = [
+            Sector.TECHNOLOGY,
+            Sector.FINANCIALS,
+            Sector.ENERGY,
+        ]
+
+    print(f"Sectors: {', '.join(s.value for s in sectors)}")
+    print(f"Period: {args.start} to {args.end}")
+    print(f"Lookback: {args.lookback} months")
+    print(f"Rebalance: every {args.rebalance} months")
+    print(f"Stocks per sector: {args.per_sector}")
+    print(f"Initial capital: ${args.capital:,.0f}")
+    print()
+
+    # Create backtester
+    backtester = RollingOptimizationBacktester(
+        sectors=sectors,
+        lookback_months=args.lookback,
+        rebalance_months=args.rebalance,
+        stocks_per_sector=args.per_sector,
+        initial_capital=args.capital,
+        optimization_stocks=args.opt_stocks,
+        optimize_params=args.optimize_params,
+    )
+
+    # Run backtest
+    results = backtester.run(
+        start_date=args.start,
+        end_date=args.end,
+        verbose=True,
+    )
+
+    # Print results
+    print(results.summary())
+
+    # Compare to non-rolling baseline if requested
+    if args.compare_baseline:
+        print("\n" + "=" * 70)
+        print("BASELINE COMPARISON (static strategy assignment)")
+        print("=" * 70)
+        # Run non-optimized baseline for comparison
+        _run_baseline_comparison(args, sectors, results)
+
+    return 0
+
+
+def _run_baseline_comparison(args, sectors, rolling_results):
+    """Run baseline comparison without rolling optimization."""
+    from .backtesting import (
+        BacktestEngine,
+        HistoricDataFrameHandler,
+        Portfolio,
+        InstantExecutionHandler,
+        MultiStrategyManager,
+        SECTOR_STOCKS,
+        get_sector_strategy,
+        ConfidenceCalculator,
+    )
+    from queue import Queue
+
+    # Use same period as rolling backtest
+    start = args.start
+    end = args.end
+
+    # Need to account for lookback period
+    from datetime import datetime
+    from dateutil.relativedelta import relativedelta
+    start_dt = datetime.strptime(start, "%Y-%m-%d") + relativedelta(months=args.lookback)
+    start = start_dt.strftime("%Y-%m-%d")
+
+    calc = ConfidenceCalculator(lookback_days=60)
+    scan_start = (start_dt - pd.Timedelta(days=60)).strftime("%Y-%m-%d")
+
+    selected_stocks = []
+
+    for sector in sectors:
+        stocks = SECTOR_STOCKS.get(sector, [])[:30]
+        sector_candidates = []
+
+        for symbol in stocks:
+            try:
+                data = fetch_yfinance_data(symbol, scan_start, end)
+                if len(data) < 30:
+                    continue
+
+                prices = data['Close'].values
+                strategy_config = get_sector_strategy(symbol)
+                metrics = calc.calculate(symbol, prices, signal_strength=0.5)
+
+                sector_candidates.append({
+                    'symbol': symbol,
+                    'sector': sector,
+                    'strategy': strategy_config,
+                    'confidence': metrics.confidence,
+                    'data': data,
+                })
+            except:
+                pass
+
+        sector_candidates.sort(key=lambda x: x['confidence'], reverse=True)
+        selected_stocks.extend(sector_candidates[:args.per_sector])
+
+    if not selected_stocks:
+        print("Could not fetch baseline data")
+        return
+
+    # Prepare data
+    all_data = {}
+    min_date = None
+    max_date = None
+
+    for stock_info in selected_stocks:
+        symbol = stock_info['symbol']
+        data = stock_info['data']
+        data = data[(data.index >= start) & (data.index <= end)]
+
+        if len(data) < 20:
+            continue
+
+        all_data[symbol] = data
+
+        if min_date is None or data.index[0] > min_date:
+            min_date = data.index[0]
+        if max_date is None or data.index[-1] < max_date:
+            max_date = data.index[-1]
+
+    if not all_data:
+        print("Insufficient baseline data")
+        return
+
+    combined_data = pd.DataFrame(index=pd.date_range(min_date, max_date, freq='B'))
+
+    for symbol, data in all_data.items():
+        data = data[(data.index >= min_date) & (data.index <= max_date)]
+        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            if col in data.columns:
+                combined_data[f"{symbol}_{col}"] = data[col]
+
+    combined_data = combined_data.ffill().dropna()
+
+    events = Queue()
+
+    data_handler = HistoricDataFrameHandler(
+        events_queue=events,
+        symbol_list=list(all_data.keys()),
+        data=combined_data,
+    )
+
+    portfolio = Portfolio(
+        initial_capital=args.capital,
+        max_position_pct=min(0.15, 1.5 / len(all_data)),
+    )
+
+    executor = InstantExecutionHandler(events_queue=events)
+
+    strategy = MultiStrategyManager(
+        events_queue=events,
+        data_handler=data_handler,
+        portfolio=portfolio,
+    )
+
+    for stock_info in selected_stocks:
+        symbol = stock_info['symbol']
+        if symbol not in all_data:
+            continue
+        strat = stock_info['strategy']
+        strategy.add_strategy(symbol, strat['type'], **strat['params'])
+
+    engine = BacktestEngine(
+        data_handler=data_handler,
+        strategy=strategy,
+        portfolio=portfolio,
+        execution_handler=executor,
+    )
+
+    baseline_results = engine.run()
+
+    # Print comparison
+    print(f"\nBaseline (static strategies):")
+    print(f"  Final Equity:    ${baseline_results.final_equity:>12,.0f}")
+    print(f"  Total Return:    {baseline_results.total_return_pct:>12.2f}%")
+    print(f"  Sharpe Ratio:    {baseline_results.sharpe_ratio:>12.2f}")
+    print(f"  Max Drawdown:    {baseline_results.max_drawdown_pct:>12.2f}%")
+    print(f"  Win Rate:        {baseline_results.win_rate:>12.1f}%")
+
+    print(f"\nRolling Optimization:")
+    print(f"  Final Equity:    ${rolling_results.final_equity:>12,.0f}")
+    print(f"  Total Return:    {rolling_results.total_return_pct:>12.2f}%")
+    print(f"  Sharpe Ratio:    {rolling_results.sharpe_ratio:>12.2f}")
+    print(f"  Max Drawdown:    {rolling_results.max_drawdown_pct:>12.2f}%")
+    print(f"  Win Rate:        {rolling_results.avg_win_rate:>12.1f}%")
+
+    delta_return = rolling_results.total_return_pct - baseline_results.total_return_pct
+    delta_equity = rolling_results.final_equity - baseline_results.final_equity
+
+    print(f"\nDelta (Rolling - Baseline):")
+    print(f"  Return:          {delta_return:>+12.2f}%")
+    print(f"  Equity:          ${delta_equity:>+12,.0f}")
 
 
 def cmd_optimize_sectors(args):
@@ -1169,7 +1385,7 @@ Examples:
 
     # Sector portfolio command - diversified sector portfolio
     sector_parser = subparsers.add_parser("sector-portfolio", help="Run sector-diversified portfolio with confidence weighting")
-    sector_parser.add_argument("--sectors", help="Comma-separated sectors (default: all major sectors)")
+    sector_parser.add_argument("--sectors", help="Comma-separated sectors (default: technology,financials,energy)")
     sector_parser.add_argument("--per-sector", type=int, default=8, help="Stocks per sector (default: 8)")
     sector_parser.add_argument("--scan-limit", type=int, default=30, help="Max stocks to scan per sector (default: 30)")
     sector_parser.add_argument("--start", "-s", help="Start date (YYYY-MM-DD)")
@@ -1179,6 +1395,27 @@ Examples:
                                 help="Use optimized sector-algorithm pairings from cache")
     sector_parser.add_argument("--optimized-cache", default=".optimization_cache",
                                 help="Directory containing optimization results (default: .optimization_cache)")
+
+    # Rolling backtest command - rolling optimization backtest
+    rolling_parser = subparsers.add_parser("rolling-backtest",
+                                            help="Run backtest with rolling 12-month optimization")
+    rolling_parser.add_argument("--sectors", help="Comma-separated sectors (default: technology,financials,energy)")
+    rolling_parser.add_argument("--start", "-s", required=True, help="Start date (YYYY-MM-DD)")
+    rolling_parser.add_argument("--end", "-e", required=True, help="End date (YYYY-MM-DD)")
+    rolling_parser.add_argument("--lookback", type=int, default=12,
+                                 help="Optimization lookback in months (default: 12)")
+    rolling_parser.add_argument("--rebalance", type=int, default=3,
+                                 help="Rebalance frequency in months (default: 3)")
+    rolling_parser.add_argument("--per-sector", type=int, default=6,
+                                 help="Stocks per sector (default: 6)")
+    rolling_parser.add_argument("--capital", type=float, default=100000,
+                                 help="Initial capital (default: 100000)")
+    rolling_parser.add_argument("--opt-stocks", type=int, default=5,
+                                 help="Stocks per sector for optimization (default: 5)")
+    rolling_parser.add_argument("--optimize-params", action="store_true",
+                                 help="Also optimize algorithm parameters (slower)")
+    rolling_parser.add_argument("--compare-baseline", action="store_true",
+                                 help="Compare to non-rolling baseline")
 
     # Optimize sectors command - find optimal sector-algorithm pairings
     optimize_parser = subparsers.add_parser("optimize-sectors",
@@ -1226,6 +1463,8 @@ Examples:
             return cmd_sector_portfolio(args)
         elif args.command == "optimize-sectors":
             return cmd_optimize_sectors(args)
+        elif args.command == "rolling-backtest":
+            return cmd_rolling_backtest(args)
         else:
             parser.print_help()
             return 1

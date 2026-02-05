@@ -141,6 +141,12 @@ from .sector_optimizer import (
     print_optimization_results,
 )
 
+from .rolling_optimizer import (
+    PeriodResult,
+    RollingBacktestResults,
+    RollingOptimizationBacktester,
+)
+
 from .engine import (
     BacktestEngine,
     BacktestResults,
@@ -214,6 +220,10 @@ __all__ = [
     "SectorOptimizationResults",
     "SectorAlgorithmOptimizer",
     "print_optimization_results",
+    # Rolling optimizer
+    "PeriodResult",
+    "RollingBacktestResults",
+    "RollingOptimizationBacktester",
     # Engine
     "BacktestEngine",
     "BacktestResults",
